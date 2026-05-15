@@ -1,0 +1,21 @@
+{
+  "oracle": {
+    "modo_conexao": "DIRETO",
+    "usuario": "VIASOFT",
+    "senha": "VIASOFT",
+    "direto": {
+      "host": "NW596",
+      "porta": 30200,
+      "sid": "",
+      "service_name": "ORCL"
+    },
+    "tns": {
+      "alias": "",
+      "tnsnames_path": "",
+      "oracle_client_bin": ""
+    }
+  },
+  "server": {
+    "porta": 5001
+  }
+}

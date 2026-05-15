@@ -1,0 +1,121 @@
+/* ── reset ───────────────────────────────────────────────────────────────── */
+html, body { height: 100%; margin: 0; overflow: hidden; font-size: 0.875rem; }
+
+/* ── toolbar ─────────────────────────────────────────────────────────────── */
+#toolbar {
+  background: var(--bs-body-bg);
+}
+
+/* ── área principal (preenche tudo abaixo de navbar + toolbar) ───────────── */
+#mainArea {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  /* será ajustado via JS após medir navbar + toolbar */
+}
+
+/* ── grafo ──────────────────────────────────────────────────────────────── */
+#network {
+  position: absolute;
+  inset: 0;
+  background: var(--bs-body-bg);
+}
+
+/* ── estado vazio ────────────────────────────────────────────────────────── */
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* ── controles do grafo ──────────────────────────────────────────────────── */
+.graph-controls {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 10;
+}
+
+/* ── painel de detalhe ──────────────────────────────────────────────────── */
+.painel-detalhe {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  background: var(--bs-body-bg);
+  border-left: 1px solid var(--bs-border-color);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+}
+.painel-detalhe.d-none { display: none !important; }
+
+#detalheBody {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ── badges de tipo de nó ───────────────────────────────────────────────── */
+.node-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.badge-PESSOA     { background:#19751922; color:#6abf69; border:1px solid #19751955; }
+.badge-PEDCAB     { background:#0d6efd22; color:#4da3ff; border:1px solid #0d6efd55; }
+.badge-NFCAB      { background:#19875422; color:#2ecc71; border:1px solid #19875455; }
+.badge-PDUPREC    { background:#fd7e1422; color:#fd9843; border:1px solid #fd7e1455; }
+.badge-PDUPPAGA   { background:#e8944a22; color:#e8944a; border:1px solid #e8944a55; }
+.badge-PRDUPREC   { background:#6f42c122; color:#a07be0; border:1px solid #6f42c155; }
+.badge-PPDUPPAG   { background:#b07de022; color:#b07de0; border:1px solid #b07de055; }
+.badge-PLANCA     { background:#0dcaf022; color:#0dcaf0; border:1px solid #0dcaf055; }
+.badge-CONTAMOVLAN  { background:#20c99722; color:#20c997; border:1px solid #20c99755; }
+.badge-CONTAMOVLANAC{ background:#00bcd422; color:#00bcd4; border:1px solid #00bcd455; }
+.badge-PCHEQREC   { background:#ffc10722; color:#ffc107; border:1px solid #ffc10755; }
+.badge-PCHEQEMI   { background:#e8a80022; color:#e8a800; border:1px solid #e8a80055; }
+.badge-PRDURECAR   { background:#dc354522; color:#f35;    border:1px solid #dc354555; }
+.badge-ADIANTAMENTO  { background:#d4a01722; color:#d4a017; border:1px solid #d4a01755; }
+.badge-PRVDACAR      { background:#e83e8c22; color:#e83e8c; border:1px solid #e83e8c55; }
+.badge-ACERCARTDIG   { background:#32bcad22; color:#32bcad; border:1px solid #32bcad55; }
+
+/* ── tabela de detalhe ──────────────────────────────────────────────────── */
+.detalhe-table { width: 100%; border-collapse: collapse; }
+.detalhe-table tr { border-bottom: 1px solid var(--bs-border-color); }
+.detalhe-table tr:last-child { border-bottom: none; }
+.detalhe-table td { padding: 5px 2px; vertical-align: top; }
+.detalhe-table td:first-child {
+  color: var(--bs-secondary-color);
+  white-space: nowrap;
+  padding-right: 12px;
+  font-size: 0.75rem;
+  width: 110px;
+}
+.detalhe-table td:last-child { font-weight: 500; word-break: break-word; }
+
+/* ── itens da NF ────────────────────────────────────────────────────────── */
+.item-list { font-size: 0.75rem; }
+.item-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--bs-border-color);
+}
+.item-row:last-child { border-bottom: none; }
+.item-row span:last-child { white-space: nowrap; color: var(--bs-secondary-color); }
+
+/* ── spinner ─────────────────────────────────────────────────────────────── */
+.spin { animation: spin 1s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
