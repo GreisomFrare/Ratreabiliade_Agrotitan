@@ -19,20 +19,32 @@ document.getElementById('btnTema').addEventListener('click', () => {
 });
 
 /* ── formulário: adapta campos por tipo ─────────────────────────────────── */
-const selTela   = document.getElementById('selTela');
-const grpEstab  = document.getElementById('grpEstab');
-const grpSerie  = document.getElementById('grpSerie');
-const grpEmpresa= document.getElementById('grpEmpresa');
-const lblDoc    = document.getElementById('lblDoc');
+const selTela        = document.getElementById('selTela');
+const grpEstab       = document.getElementById('grpEstab');
+const grpSerie       = document.getElementById('grpSerie');
+const grpEmpresa     = document.getElementById('grpEmpresa');
+const grpCliente     = document.getElementById('grpCliente');
+const grpEstabCliente= document.getElementById('grpEstabCliente');
+const grpEmitente    = document.getElementById('grpEmitente');
+const grpBanco       = document.getElementById('grpBanco');
+const grpPortador    = document.getElementById('grpPortador');
+const lblDoc         = document.getElementById('lblDoc');
 
 selTela.addEventListener('change', _adaptarCampos);
 function _adaptarCampos() {
   const t = selTela.value;
-  const usaEmpresa = t === 'DUPREC' || t === 'DUPPAG' || t === 'CONTAMOV';
+  const isCheqRec = t === 'CHEQREC';
+  const isCheqEmi = t === 'CHEQEMI';
+  const usaEmpresa = t === 'DUPREC' || t === 'DUPPAG' || t === 'CONTAMOV' || isCheqRec || isCheqEmi;
   const usaEstab   = t === 'NFCAB'  || t === 'PEDCAB'  || t === 'CONTAMOV';
-  grpEmpresa.style.display = usaEmpresa ? '' : 'none';
-  grpEstab.style.display   = usaEstab   ? '' : 'none';
-  grpSerie.style.display   = t === 'PEDCAB' ? '' : 'none';
+  grpEmpresa.style.display      = usaEmpresa  ? '' : 'none';
+  grpEstab.style.display        = usaEstab    ? '' : 'none';
+  grpSerie.style.display        = (t === 'PEDCAB' || isCheqEmi) ? '' : 'none';
+  grpEstabCliente.style.display = isCheqRec   ? '' : 'none';
+  grpCliente.style.display      = isCheqRec   ? '' : 'none';
+  grpEmitente.style.display     = isCheqRec   ? '' : 'none';
+  grpBanco.style.display        = isCheqRec   ? '' : 'none';
+  grpPortador.style.display     = isCheqEmi   ? '' : 'none';
   document.getElementById('lblEmpresa').textContent = t === 'CONTAMOV' ? 'Nº CM' : 'Empresa';
   lblDoc.textContent = {
     DUPREC:   'Número da Duplicata',
@@ -40,6 +52,8 @@ function _adaptarCampos() {
     NFCAB:    'Seq. Nota (SEQNOTA)',
     PEDCAB:   'Número do Pedido',
     CONTAMOV: 'Seq. CM (SEQCM)',
+    CHEQREC:  'Nº do Cheque',
+    CHEQEMI:  'Nº do Cheque',
   }[t] || 'Número';
 }
 
@@ -304,9 +318,9 @@ const LABELS = {
   endereco:'Endereço', numeroend:'Número', complemento:'Complemento',
   bairro:'Bairro', cidade:'Cidade', uf:'UF', cep:'CEP',
   telefone:'Telefone', celular:'Celular',
-  portador:'Portador', bom_para:'Bom Para', favorecido:'Favorecido',
+  portador:'Portador', portador_desc:'Portador', bom_para:'Bom Para', favorecido:'Favorecido', emitente:'Emitente',
 };
-const SKIP = ['itens', 'portador', 'estab', 'empresa', 'pgto', 'agrfin', 'estab_recibo', 'recibo_data'];
+const SKIP = ['itens', 'portador', 'estab', 'pgto', 'agrfin', 'estab_recibo', 'recibo_data', 'transferido_de_estab', 'dt_transferencia'];
 
 function _mostrarDetalhe(node) {
   const painel = document.getElementById('painelDetalhe');
@@ -315,7 +329,18 @@ function _mostrarDetalhe(node) {
     `<span class="node-badge badge-${node.type}">${node.type}</span> ${node.label.replace(/\n/g,' · ')}`;
 
   const d = node.rawData || {};
-  let html = '<table class="detalhe-table">';
+  let html = '';
+  if (d.transferido_de_estab != null) {
+    html += `<div class="mx-3 mt-2 mb-1 p-2 rounded d-flex align-items-center gap-2"
+               style="background:rgba(255,193,7,0.15);border:1px solid rgba(255,193,7,0.5);">
+      <i class="bi bi-arrow-left-right text-warning fs-5"></i>
+      <div style="font-size:0.8rem;">
+        <div class="fw-bold text-warning">Cheque transferido</div>
+        <div class="text-muted">Originado do Estab. ${d.transferido_de_estab}${d.dt_transferencia ? ' em ' + d.dt_transferencia : ''}</div>
+      </div>
+    </div>`;
+  }
+  html += '<table class="detalhe-table">';
   for (const [k, v] of Object.entries(d)) {
     if (SKIP.includes(k) || v === null || v === undefined || v === '') continue;
     const lbl = LABELS[k] || k;
@@ -444,6 +469,20 @@ document.getElementById('formConsulta').addEventListener('submit', async e => {
   } else if (tela === 'CONTAMOV') {
     p.set('numerocm', empresa);  // inpEmpresa reaproveitado para Nº CM
     p.set('estab', estab);
+  } else if (tela === 'CHEQREC') {
+    p.set('empresa', empresa);
+    const cli  = document.getElementById('inpCliente').value.trim();
+    const ec   = document.getElementById('inpEstabCliente').value.trim();
+    const emit = document.getElementById('inpEmitente').value.trim();
+    const ban  = document.getElementById('inpBanco').value.trim();
+    if (cli)  p.set('cliente',        cli);
+    if (ec)   p.set('estabcliente',   ec);
+    if (emit) p.set('emitente',       emit);
+    if (ban)  p.set('banco',          ban);
+  } else if (tela === 'CHEQEMI') {
+    p.set('empresa',  empresa);
+    p.set('portador', document.getElementById('inpPortador').value.trim());
+    p.set('serie',    serie || '1');
   } else {
     p.set('estab', estab);
   }
@@ -538,7 +577,7 @@ function _parseClave(chave) {
 }
 
 function _initFromERP() {
-  const TELA_MAP = { PDUPREC: 'DUPREC', PDUPPAGA: 'DUPPAG', NFCAB: 'NFCAB', PEDCAB: 'PEDCAB', CONTAMOVLAN: 'CONTAMOV' };
+  const TELA_MAP = { PDUPREC: 'DUPREC', PDUPPAGA: 'DUPPAG', NFCAB: 'NFCAB', PEDCAB: 'PEDCAB', CONTAMOVLAN: 'CONTAMOV', PCHEQREC: 'CHEQREC', PCHEQEMI: 'CHEQEMI' };
 
   function tentar() {
     const params = window.delphiApp?.params;
@@ -569,6 +608,18 @@ function _initFromERP() {
       document.getElementById('inpEmpresa').value = kv.NUMEROCM || '';
       document.getElementById('inpEstab').value   = kv.ESTAB    || 1;
       document.getElementById('inpDoc').value     = kv.SEQCM    || '';
+    } else if (tela === 'CHEQREC') {
+      document.getElementById('inpEmpresa').value     = kv.EMPRESA       || 1;
+      document.getElementById('inpEstabCliente').value= kv.ESTABCLIENTE  || '';
+      document.getElementById('inpCliente').value     = kv.CLIENTE       || '';
+      document.getElementById('inpEmitente').value    = kv.EMITENTE      || '';
+      document.getElementById('inpBanco').value       = kv.BANCO         || '';
+      document.getElementById('inpDoc').value         = kv.NROCHEQUE     || '';
+    } else if (tela === 'CHEQEMI') {
+      document.getElementById('inpEmpresa').value  = kv.EMPRESA   || 1;
+      document.getElementById('inpPortador').value = kv.PORTADOR  || '';
+      document.getElementById('inpSerie').value    = kv.SERIE     || '1';
+      document.getElementById('inpDoc').value      = kv.NROCHEQUE || '';
     }
 
     if (document.getElementById('inpDoc').value) {

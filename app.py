@@ -2,6 +2,7 @@ import os
 from flask import Flask, send_from_directory
 from flask_cors import CORS
 from routes.trace import bp as trace_bp
+from routes.descduprec import bp as descduprec_bp
 
 BASE_DIR = os.path.dirname(__file__)
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
@@ -12,6 +13,7 @@ def create_app():
     CORS(app)
 
     app.register_blueprint(trace_bp)
+    app.register_blueprint(descduprec_bp)
 
     @app.route("/")
     def index():

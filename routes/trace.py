@@ -358,6 +358,15 @@ def _build_contamovlan_node(cur, numerocm, seqcm, estab_cm, val_fallback):
     }
 
 
+def _empresa_desc(cur, empresa):
+    cur.execute(
+        "SELECT REDUZIDO FROM VIASOFT.EMPRESA WHERE EMPRESA=:e",
+        e=empresa,
+    )
+    r = cur.fetchone()
+    return f"{empresa} - {r[0]}" if r and r[0] else str(empresa)
+
+
 def _build_planca_node(cur, emp, dtlanca, seqlanca):
     """Busca PLANCA e retorna o dict do nó pronto, ou None se não encontrado."""
     cur.execute(
@@ -374,9 +383,10 @@ def _build_planca_node(cur, emp, dtlanca, seqlanca):
     if not pl:
         return None
     portador, valor, hist1, userid, nrorecibo, nrodoc, ana, estab_ana, hist2, hist3, hist4, estabrecibo = pl
-    port_info     = _portador(cur, emp, portador) if portador else {}
+    port_info      = _portador(cur, emp, portador) if portador else {}
     analitica_desc = _analitica(cur, estab_ana or emp, ana) if ana else None
-    recibo_data   = _recibo(cur, estabrecibo or emp, nrorecibo) if nrorecibo else None
+    recibo_data    = _recibo(cur, estabrecibo or emp, nrorecibo) if nrorecibo else None
+    empresa_desc   = _empresa_desc(cur, emp)
     return {
         "id":    f"PLANCA-{emp}-{dtlanca.strftime('%Y%m%d')}-{seqlanca}",
         "type":  "PLANCA",
@@ -386,7 +396,7 @@ def _build_planca_node(cur, emp, dtlanca, seqlanca):
             f"\nValor: {_fmtval(valor)}"
         ),
         "data": {
-            "portador":     portador,
+            "empresa":      empresa_desc,
             "portador_desc": port_info.get("descricao"),
             "valor":        float(valor) if valor else 0,
             "analitica":    analitica_desc,
@@ -500,6 +510,7 @@ def _trace_pduprec(cur, empresa, duprec_raw, skip_pessoa=False, skip_upstream=Fa
      analitica, estab_analitica,
      situacao, seqcobcab, seqcobdet, banco_dup) = dup
     duprec_real = duprec
+    pessoa_numerocm = cliente  # atualizado para PEDCAB.PESSOA se encontrado
 
     filial_info   = _filial(cur, emp)
     cliente_info  = _pessoa(cur, cliente)
@@ -632,6 +643,8 @@ def _trace_pduprec(cur, empresa, duprec_raw, skip_pessoa=False, skip_upstream=Fa
                 ped = cur.fetchone()
                 if not ped:
                     continue
+                if ped[0]:
+                    pessoa_numerocm = ped[0]
                 pessoa_info = _pessoa(cur, ped[0]) if ped[0] else {}
                 filial_ped = _filial(cur, estab_p)
                 if not any(n["id"] == ped_id for n in nodes):
@@ -787,6 +800,8 @@ def _trace_pduprec(cur, empresa, duprec_raw, skip_pessoa=False, skip_upstream=Fa
                                 ped = cur.fetchone()
                                 if not ped:
                                     continue
+                                if ped[0]:
+                                    pessoa_numerocm = ped[0]
                                 pessoa_info = _pessoa(cur, ped[0]) if ped[0] else {}
                                 filial_ped = _filial(cur, estab_p)
                                 if not any(n["id"] == ped_id for n in nodes):
@@ -952,12 +967,17 @@ def _trace_pduprec(cur, empresa, duprec_raw, skip_pessoa=False, skip_upstream=Fa
 
         # PRDURECH → PCHEQREC
         cur.execute(
-            """SELECT ch.BANCO, ch.NROCHEQUE, ch.VLRCHEQREC, ch.DTLANCA
+            """SELECT ch.BANCO, ch.NROCHEQUE, ch.VLRCHEQREC,
+                      pcr.DTLANCA, pcr.SEQLANCA
                FROM VIASOFT.PRDURECH ch
+               LEFT JOIN VIASOFT.PCHEQREC pcr
+                 ON pcr.EMPRESA = ch.EMPRESA
+                AND pcr.BANCO = ch.BANCO
+                AND pcr.NROCHEQUE = ch.NROCHEQUE
                WHERE ch.EMPRESA=:emp AND REPLACE(ch.DUPREC,' ','')=:dup AND ch.SEQRECBTO=:seq""",
             emp=emp, dup=duprec_norm, seq=seqrec,
         )
-        for banco_ch, nrocheque, vlr_ch, dtlanca_ch in cur.fetchall():
+        for banco_ch, nrocheque, vlr_ch, dtlanca_ch, seqlanca_ch in cur.fetchall():
             ch_id = f"PCHEQREC-{emp}-{banco_ch}-{nrocheque}"
             nodes.append({
                 "id": ch_id,
@@ -975,6 +995,12 @@ def _trace_pduprec(cur, empresa, duprec_raw, skip_pessoa=False, skip_upstream=Fa
                 },
             })
             edges.append({"from": bx_id, "to": ch_id, "label": "cheque"})
+            if dtlanca_ch and seqlanca_ch:
+                lanca_node = _build_planca_node(cur, emp, dtlanca_ch, seqlanca_ch)
+                if lanca_node:
+                    if not any(n["id"] == lanca_node["id"] for n in nodes):
+                        nodes.append(lanca_node)
+                    edges.append({"from": ch_id, "to": lanca_node["id"], "label": "compensação"})
 
         # PRDUREDUP → PDUPREC (baixa em duplicata)
         cur.execute(
@@ -1066,9 +1092,9 @@ def _trace_pduprec(cur, empresa, duprec_raw, skip_pessoa=False, skip_upstream=Fa
 
     # ── PESSOA: nó inicial (leftmost) — omitido em dups administratoras
     if not skip_pessoa:
-        pessoa_det = _pessoa_detail(cur, cliente)
+        pessoa_det = _pessoa_detail(cur, pessoa_numerocm)
         if pessoa_det:
-            pes_id = f"PESSOA-{cliente}"
+            pes_id = f"PESSOA-{pessoa_numerocm}"
             if not any(n["id"] == pes_id for n in nodes):
                 nodes.append({
                     "id": pes_id,
@@ -1300,7 +1326,7 @@ def _trace_pduppaga(cur, empresa, duppag_raw):
         )
         for estab_cli, banco_ch, emitente, nrocheque, cliente, vlr_ch in cur.fetchall():
             cur.execute(
-                """SELECT VALOR, DTLANCA, DTEMISSAO, HISTORICO, SITUACAO
+                """SELECT VALOR, DTLANCA, DTEMISSAO, HISTORICO, SITUACAO, SEQLANCA
                    FROM VIASOFT.PCHEQREC
                    WHERE EMPRESA=:e AND ESTABCLIENTE=:ec AND BANCO=:b
                      AND EMITENTE=:em AND NROCHEQUE=:n AND CLIENTE=:c
@@ -1326,6 +1352,12 @@ def _trace_pduppaga(cur, empresa, duppag_raw):
                     },
                 })
             edges.append({"from": bx_id, "to": ch_id, "label": "cheque terceiro"})
+            if chq and chq[1] and chq[5]:
+                lanca_node = _build_planca_node(cur, emp, chq[1], chq[5])
+                if lanca_node:
+                    if not any(n["id"] == lanca_node["id"] for n in nodes):
+                        nodes.append(lanca_node)
+                    edges.append({"from": ch_id, "to": lanca_node["id"], "label": "compensação"})
 
         # CM → PPADUCM → CONTAMOVLAN
         cur.execute(
@@ -1361,7 +1393,7 @@ def _trace_pduppaga(cur, empresa, duppag_raw):
                 ch_id = f"PCHEQREC-{emp}-{banco_t}-{nrocheque_t}"
                 if not any(n["id"] == ch_id for n in nodes):
                     cur.execute(
-                        """SELECT VALOR, DTLANCA FROM VIASOFT.PCHEQREC
+                        """SELECT VALOR, DTLANCA, SEQLANCA FROM VIASOFT.PCHEQREC
                            WHERE EMPRESA=:e AND ESTABCLIENTE=:ec AND BANCO=:b
                              AND EMITENTE=:em AND NROCHEQUE=:n AND CLIENTE=:c AND ROWNUM=1""",
                         e=emp, ec=estab_cli_t, b=banco_t, em=emitente_t, n=nrocheque_t, c=cliente_t,
@@ -1379,6 +1411,12 @@ def _trace_pduppaga(cur, empresa, duppag_raw):
                                  "valor": float(chq[0]) if chq and chq[0] else 0},
                     })
                 edges.append({"from": bx_id, "to": ch_id, "label": "troco cheque"})
+                if chq and chq[1] and chq[2]:
+                    lanca_node = _build_planca_node(cur, emp, chq[1], chq[2])
+                    if lanca_node:
+                        if not any(n["id"] == lanca_node["id"] for n in nodes):
+                            nodes.append(lanca_node)
+                        edges.append({"from": ch_id, "to": lanca_node["id"], "label": "compensação"})
 
         # PPDUPPADUP → PDUPPAGA agrupadora
         cur.execute(
@@ -1706,14 +1744,14 @@ def _cheqemi_node(cur, empresa, portador, nrocheque, serie, vlr_fallback):
 
 def _cheqrec_node(cur, empresa, banco, estab_cli, cliente, emitente, nrocheque, vlr_fallback):
     cur.execute(
-        """SELECT VALOR, DTLANCA, DTEMISSAO, HISTORICO, SITUACAO
+        """SELECT VALOR, DTLANCA, DTEMISSAO, HISTORICO, SITUACAO, SEQLANCA
            FROM VIASOFT.PCHEQREC
            WHERE EMPRESA=:e AND ESTABCLIENTE=:ec AND BANCO=:b
              AND EMITENTE=:em AND NROCHEQUE=:n AND CLIENTE=:c AND ROWNUM=1""",
         e=empresa, ec=estab_cli, b=banco, em=emitente, n=nrocheque, c=cliente,
     )
     chq = cur.fetchone()
-    return {
+    ch_node = {
         "id":   f"PCHEQREC-{empresa}-{banco}-{nrocheque}",
         "type": "PCHEQREC",
         "label": (
@@ -1728,6 +1766,10 @@ def _cheqrec_node(cur, empresa, banco, estab_cli, cliente, emitente, nrocheque, 
             "data":      chq[1].strftime("%d/%m/%Y") if chq and chq[1] else None,
         },
     }
+    lanca_node = None
+    if chq and chq[1] and chq[5]:  # DTLANCA e SEQLANCA preenchidos = cheque compensado
+        lanca_node = _build_planca_node(cur, empresa, chq[1], chq[5])
+    return ch_node, lanca_node
 
 
 def _build_adiantamento_nodes(cur, nodes, edges, cml_id, numerocm, estab, seqcm):
@@ -1800,7 +1842,7 @@ def _build_adiantamento_nodes(cur, nodes, edges, cml_id, numerocm, estab, seqcm)
         n=numerocm, e=estab, s=seqcm,
     )
     for banco, estab_cli, cliente, emitente, nrocheque, vlr, seqche in cur.fetchall():
-        ch_node = _cheqrec_node(cur, estab, banco, estab_cli, cliente, emitente, nrocheque, vlr)
+        ch_node, lanca_node = _cheqrec_node(cur, estab, banco, estab_cli, cliente, emitente, nrocheque, vlr)
         adt_id = f"ADIANTAMENTO-CHRE-{numerocm}-{estab}-{seqcm}-{seqche}"
         if not any(n["id"] == adt_id for n in nodes):
             nodes.append({
@@ -1822,6 +1864,10 @@ def _build_adiantamento_nodes(cur, nodes, edges, cml_id, numerocm, estab, seqcm)
         if not any(n["id"] == ch_node["id"] for n in nodes):
             nodes.append(ch_node)
         edges.append({"from": adt_id, "to": ch_node["id"],  "label": "cheque recebido"})
+        if lanca_node:
+            if not any(n["id"] == lanca_node["id"] for n in nodes):
+                nodes.append(lanca_node)
+            edges.append({"from": ch_node["id"], "to": lanca_node["id"], "label": "compensação"})
 
 
 def _contamov_pagamentos(cur, nodes, edges, from_id, numerocm, estab, seqcm):
@@ -1858,10 +1904,14 @@ def _contamov_pagamentos(cur, nodes, edges, from_id, numerocm, estab, seqcm):
         n=numerocm, e=estab, s=seqcm,
     )
     for banco, estab_cli, cliente, emitente, nrocheque, vlr in cur.fetchall():
-        ch_node = _cheqrec_node(cur, estab, banco, estab_cli, cliente, emitente, nrocheque, vlr)
+        ch_node, lanca_node = _cheqrec_node(cur, estab, banco, estab_cli, cliente, emitente, nrocheque, vlr)
         if not any(n["id"] == ch_node["id"] for n in nodes):
             nodes.append(ch_node)
         edges.append({"from": from_id, "to": ch_node["id"], "label": "cheque recebido"})
+        if lanca_node:
+            if not any(n["id"] == lanca_node["id"] for n in nodes):
+                nodes.append(lanca_node)
+            edges.append({"from": ch_node["id"], "to": lanca_node["id"], "label": "compensação"})
 
     # DUPP → trace completo da PDUPPAGA (NF upstream + baixas)
     cur.execute(
@@ -2030,6 +2080,388 @@ def _trace_contamovlan(cur, numerocm, estab, seqcm):
     return nodes, edges, None
 
 
+# ─── trace por PCHEQEMI ──────────────────────────────────────────────────────
+
+def _trace_pcheqemi(cur, empresa, portador, nrocheque, serie):
+    nodes = []
+    edges = []
+
+    cur.execute(
+        """SELECT EMPRESA, PORTADOR, NROCHEQUE, SERIE,
+                  VALOR, DTEMISSAO, DTBOMPARA, FAVORECIDO, HISTORICO, HISTORICO2,
+                  SITUACAO, DTLANCA, SEQLANCA, DTLANCATRANSF, SEQLANCATRANSF,
+                  ESTABFORNECEDOR, FORNECEDOR, ESTABRECIBO, NRORECIBO
+           FROM VIASOFT.PCHEQEMI
+           WHERE EMPRESA=:e AND PORTADOR=:p AND NROCHEQUE=:n AND SERIE=:s""",
+        e=empresa, p=portador, n=nrocheque, s=serie,
+    )
+    chq = cur.fetchone()
+    if not chq:
+        return None, None, "Cheque emitido não encontrado"
+
+    (emp, port_real, nroch_real, serie_real,
+     valor, dtemissao, dtbompara, favorecido, historico, historico2,
+     situacao, dtlanca, seqlanca, dtlancatransf, seqlancatransf,
+     estab_forn, fornecedor, estabrecibo, nrorecibo) = chq
+
+    port_info   = _portador(cur, emp, port_real) if port_real else {}
+    recibo_data = _recibo(cur, estabrecibo or emp, nrorecibo) if nrorecibo else None
+
+    ch_id = f"PCHEQEMI-{emp}-{port_real}-{nroch_real}-{serie_real}"
+    nodes.append({
+        "id":     ch_id,
+        "type":   "PCHEQEMI",
+        "isRoot": True,
+        "label": (
+            f"<b>Cheque Emitido</b>\nCheque: #{nroch_real}"
+            + (f"\nSérie: {serie_real}" if serie_real else "")
+            + (f"\nEmissão: {dtemissao.strftime('%d/%m/%Y')}" if dtemissao else "")
+            + f"\nValor: {_fmtval(valor)}"
+        ),
+        "data": {
+            "nrocheque":     nroch_real,
+            "serie":         serie_real,
+            "portador_desc": port_info.get("descricao"),
+            "favorecido":    favorecido,
+            "valor":         float(valor) if valor else 0,
+            "emissao":       dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
+            "bom_para":      dtbompara.strftime("%d/%m/%Y") if dtbompara else None,
+            "historico":     historico,
+            "historico2":    historico2,
+            "situacao":      situacao,
+            "recibo_data":   recibo_data,
+        },
+    })
+
+    # ── Downstream: lançamentos de compensação e transferência de portador ────
+    if dtlanca and seqlanca:
+        n = _build_planca_node(cur, emp, dtlanca, seqlanca)
+        if n:
+            nodes.append(n)
+            edges.append({"from": ch_id, "to": n["id"], "label": "compensação"})
+
+    if dtlancatransf and seqlancatransf:
+        n = _build_planca_node(cur, emp, dtlancatransf, seqlancatransf)
+        if n and not any(x["id"] == n["id"] for x in nodes):
+            nodes.append(n)
+            edges.append({"from": ch_id, "to": n["id"], "label": "transf. portador"})
+
+    # ── Upstream: DUPPAG via PPADUCHE ─────────────────────────────────────────
+    cur.execute(
+        """SELECT EMPRESA, DUPPAG
+           FROM VIASOFT.PPADUCHE
+           WHERE ESTABBAIXA=:e AND PORTADOR=:p AND NROCHEQUE=:n AND SERIE=:s""",
+        e=emp, p=port_real, n=nroch_real, s=serie_real,
+    )
+    for ppa_emp, ppa_duppag in cur.fetchall():
+        sub_nodes, sub_edges, _ = _trace_pduppaga(cur, ppa_emp, ppa_duppag)
+        if sub_nodes:
+            dup_id = f"PDUPPAGA-{ppa_emp}-{_norm_duprec(ppa_duppag)}"
+            existing = {x["id"] for x in nodes}
+            for x in sub_nodes:
+                if x["id"] not in existing:
+                    nodes.append(x)
+            edges.extend(sub_edges)
+            edges.append({"from": dup_id, "to": ch_id, "label": "cheque emitido"})
+
+    # ── Upstream: CONTAMOV via CONTAMOVCHEM → CONTAMOVLAN ─────────────────────
+    cur.execute(
+        """SELECT NUMEROCM, ESTAB, SEQCM
+           FROM VIASOFT.CONTAMOVCHEM
+           WHERE ESTAB=:e AND PORTADOR=:p AND NROCHEQUE=:n AND SERIE=:s""",
+        e=emp, p=port_real, n=nroch_real, s=serie_real,
+    )
+    for numerocm, estab_cm, seqcm in cur.fetchall():
+        sub_nodes, sub_edges, _ = _trace_contamovlan(cur, numerocm, estab_cm, seqcm)
+        if sub_nodes:
+            cml_id = f"CONTAMOVLAN-{numerocm}-{estab_cm or 0}-{seqcm}"
+            existing = {x["id"] for x in nodes}
+            for x in sub_nodes:
+                if x["id"] not in existing:
+                    nodes.append(x)
+            edges.extend(sub_edges)
+            edges.append({"from": cml_id, "to": ch_id, "label": "cheque emitido"})
+
+    # ── Upstream: NF via AGRFINCHEEMI → NFCABAGRFIN ───────────────────────────
+    cur.execute(
+        """SELECT SEQPAGAMENTO
+           FROM VIASOFT.AGRFINCHEEMI
+           WHERE ESTAB=:e AND PORTADOR=:p AND NROCHEQUE=:n AND SERIE=:s""",
+        e=emp, p=port_real, n=nroch_real, s=serie_real,
+    )
+    nf_seen = set()
+    for (seq_pag,) in cur.fetchall():
+        cur.execute(
+            "SELECT ESTAB, SEQNOTA FROM VIASOFT.NFCABAGRFIN WHERE SEQPAGAMENTO=:s",
+            s=seq_pag,
+        )
+        for estab_nf, seqnota in cur.fetchall():
+            if (estab_nf, seqnota) in nf_seen:
+                continue
+            nf_seen.add((estab_nf, seqnota))
+            sub_nodes, sub_edges, _ = _trace_nfcab(cur, estab_nf, seqnota)
+            if sub_nodes:
+                nf_id = f"NFCAB-{estab_nf}-{seqnota}"
+                existing = {x["id"] for x in nodes}
+                for x in sub_nodes:
+                    if x["id"] not in existing:
+                        nodes.append(x)
+                edges.extend(sub_edges)
+                edges.append({"from": nf_id, "to": ch_id, "label": "cheque emitido"})
+
+    # ── Fornecedor (Pessoa) ────────────────────────────────────────────────────
+    if fornecedor:
+        pessoa_det = _pessoa_detail(cur, fornecedor)
+        if pessoa_det:
+            pes_id = f"PESSOA-{fornecedor}"
+            if not any(x["id"] == pes_id for x in nodes):
+                nodes.append({"id": pes_id, "type": "PESSOA",
+                              "label": _pessoa_label(pessoa_det), "data": pessoa_det})
+            edges.append({"from": pes_id, "to": ch_id, "label": "fornecedor"})
+
+    return nodes, edges, None
+
+
+# ─── trace por PCHEQREC ──────────────────────────────────────────────────────
+
+def _trace_pcheqrec(cur, empresa, nrocheque, cliente=None, banco=None, estabcliente=None, emitente=None, _seen=None):
+    if _seen is None:
+        _seen = set()
+
+    nodes = []
+    edges = []
+
+    # Monta WHERE com todos os campos da PK disponíveis para evitar ambiguidade
+    where  = "EMPRESA=:e AND NROCHEQUE=:n"
+    params = dict(e=empresa, n=nrocheque)
+    if cliente:
+        where += " AND CLIENTE=:c";       params['c']  = cliente
+    if banco:
+        where += " AND BANCO=:b";         params['b']  = banco
+    if estabcliente:
+        where += " AND ESTABCLIENTE=:ec"; params['ec'] = estabcliente
+    if emitente:
+        where += " AND EMITENTE=:em";     params['em'] = emitente
+
+    cur.execute(
+        f"""SELECT EMPRESA, BANCO, ESTABCLIENTE, CLIENTE, EMITENTE, NROCHEQUE,
+                  VALOR, DTEMISSAO, DTBOMPARA, HISTORICO, PORTADOR,
+                  DTLANCA,      SEQLANCA,
+                  DTLANCATRAN,  SEQLANCATRAN,
+                  DTESTORNODEP, SEQESTORNODEP,
+                  ESTABRECIBO,  NRORECIBO
+           FROM VIASOFT.PCHEQREC
+           WHERE {where} AND ROWNUM=1""",
+        **params,
+    )
+
+    chq = cur.fetchone()
+    if not chq:
+        return None, None, "Cheque recebido não encontrado"
+
+    (emp, banco, estab_cli, cliente_num, emitente, nrocheque_real,
+     valor, dtemissao, dtbompara, historico, portador,
+     dtlanca,      seqlanca,
+     dtlancatran,  seqlancatran,
+     dtestornodep, seqestornodep,
+     estabrecibo,  nrorecibo) = chq
+
+    ch_id = f"PCHEQREC-{emp}-{banco}-{nrocheque_real}"
+
+    # Evita ciclo em cadeia de transferências
+    if ch_id in _seen:
+        return [], [], None
+    _seen.add(ch_id)
+
+    port_info   = _portador(cur, emp, portador) if portador else {}
+    recibo_data = _recibo(cur, estabrecibo or emp, nrorecibo) if nrorecibo else None
+
+    is_root = len(_seen) == 1  # só o primeiro nó da cadeia é raiz
+    nodes.append({
+        "id":     ch_id,
+        "type":   "PCHEQREC",
+        "isRoot": is_root,
+        "label": (
+            f"<b>Cheque Recebido</b>\nCheque: #{nrocheque_real}"
+            + (f"\nBanco: {_trunc(banco, 22)}" if banco else "")
+            + (f"\nEmissão: {dtemissao.strftime('%d/%m/%Y')}" if dtemissao else "")
+            + f"\nValor: {_fmtval(valor)}"
+        ),
+        "data": {
+            "banco":         banco,
+            "nrocheque":     nrocheque_real,
+            "emitente":      emitente,
+            "valor":         float(valor) if valor else 0,
+            "emissao":       dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
+            "bom_para":      dtbompara.strftime("%d/%m/%Y") if dtbompara else None,
+            "historico":     historico,
+            "portador_desc": port_info.get("descricao"),
+            "recibo_data":   recibo_data,
+        },
+    })
+
+    # ── Downstream: lançamentos financeiros vinculados ────────────────────────
+
+    if dtlanca and seqlanca:
+        n = _build_planca_node(cur, emp, dtlanca, seqlanca)
+        if n:
+            nodes.append(n)
+            edges.append({"from": ch_id, "to": n["id"], "label": "compensação"})
+
+    if dtlancatran and seqlancatran:
+        n = _build_planca_node(cur, emp, dtlancatran, seqlancatran)
+        if n and not any(x["id"] == n["id"] for x in nodes):
+            nodes.append(n)
+            edges.append({"from": ch_id, "to": n["id"], "label": "saída transferência"})
+
+    if dtestornodep and seqestornodep:
+        n = _build_planca_node(cur, emp, dtestornodep, seqestornodep)
+        if n and not any(x["id"] == n["id"] for x in nodes):
+            nodes.append(n)
+            edges.append({"from": ch_id, "to": n["id"], "label": "estorno depósito"})
+
+    # ── Cadeia de transferências via TRANSFCHE ────────────────────────────────
+
+    # Este cheque foi transferido → encontrar cheque destino (:T)
+    cur.execute(
+        """SELECT ESTAB_TRAN, BANCO_TRAN, ESTABCLIENTE_TRAN, CLIENTE_TRAN,
+                  EMITENTE_TRAN, NROCHEQUE_TRAN, DTTRANSF
+           FROM VIASOFT.TRANSFCHE
+           WHERE ESTAB=:e AND BANCO=:b AND ESTABCLIENTE=:ec
+             AND CLIENTE=:c AND EMITENTE=:em AND NROCHEQUE=:n""",
+        e=emp, b=banco, ec=estab_cli, c=cliente_num, em=emitente, n=nrocheque_real,
+    )
+    for estab_t, banco_t, estabcli_t, cli_t, emit_t, nroch_t, dtransf in cur.fetchall():
+        sub_nodes, sub_edges, _ = _trace_pcheqrec(
+            cur, estab_t, nroch_t, cli_t, banco_t, estabcli_t, emit_t, _seen=_seen
+        )
+        if sub_nodes:
+            dest_id = f"PCHEQREC-{estab_t}-{banco_t}-{nroch_t}"
+            for x in sub_nodes:
+                if x["id"] == dest_id:
+                    x["data"]["transferido_de_estab"] = emp
+                    x["data"]["dt_transferencia"] = dtransf.strftime("%d/%m/%Y") if dtransf else None
+                    break
+            existing = {x["id"] for x in nodes}
+            for x in sub_nodes:
+                if x["id"] not in existing:
+                    nodes.append(x)
+            edges.extend(sub_edges)
+            label = f"transferido {dtransf.strftime('%d/%m/%Y')}" if dtransf else "transferido"
+            edges.append({"from": ch_id, "to": dest_id, "label": label})
+
+    # Este cheque é destino de transferência → encontrar cheque origem
+    cur.execute(
+        """SELECT ESTAB, BANCO, ESTABCLIENTE, CLIENTE, EMITENTE, NROCHEQUE, DTTRANSF
+           FROM VIASOFT.TRANSFCHE
+           WHERE ESTAB_TRAN=:e AND BANCO_TRAN=:b AND ESTABCLIENTE_TRAN=:ec
+             AND CLIENTE_TRAN=:c AND EMITENTE_TRAN=:em AND NROCHEQUE_TRAN=:n""",
+        e=emp, b=banco, ec=estab_cli, c=cliente_num, em=emitente, n=nrocheque_real,
+    )
+    for estab_o, banco_o, estabcli_o, cli_o, emit_o, nroch_o, dtransf in cur.fetchall():
+        sub_nodes, sub_edges, _ = _trace_pcheqrec(
+            cur, estab_o, nroch_o, cli_o, banco_o, estabcli_o, emit_o, _seen=_seen
+        )
+        if sub_nodes:
+            existing = {x["id"] for x in nodes}
+            for x in sub_nodes:
+                if x["id"] not in existing:
+                    nodes.append(x)
+            edges.extend(sub_edges)
+            orig_id = f"PCHEQREC-{estab_o}-{banco_o}-{nroch_o}"
+            label = f"transferido {dtransf.strftime('%d/%m/%Y')}" if dtransf else "transferido"
+            edges.append({"from": orig_id, "to": ch_id, "label": label})
+
+    # ── Upstream: quem originou este cheque ───────────────────────────────────
+
+    cur.execute(
+        """SELECT DISTINCT REPLACE(DUPREC,' ','')
+           FROM VIASOFT.PRDURECH
+           WHERE EMPRESA=:e AND BANCO=:b AND NROCHEQUE=:n""",
+        e=emp, b=banco, n=nrocheque_real,
+    )
+    for (duprec_norm,) in cur.fetchall():
+        sub_nodes, sub_edges, _ = _trace_pduprec(cur, emp, duprec_norm, skip_pessoa=True)
+        if sub_nodes:
+            existing = {x["id"] for x in nodes}
+            for x in sub_nodes:
+                if x["id"] not in existing:
+                    nodes.append(x)
+            edges.extend(sub_edges)
+
+    cur.execute(
+        """SELECT DISTINCT NUMEROCM, ESTAB, SEQCM
+           FROM VIASOFT.CONTAMOVCHRE
+           WHERE BANCO=:b AND NROCHEQUE=:n AND CLIENTE=:c AND EMITENTE=:em""",
+        b=banco, n=nrocheque_real, c=cliente_num, em=emitente,
+    )
+    for numerocm_cm, estab_cm, seqcm in cur.fetchall():
+        sub_nodes, sub_edges, _ = _trace_contamovlan(cur, numerocm_cm, estab_cm, seqcm)
+        if sub_nodes:
+            existing = {x["id"] for x in nodes}
+            for x in sub_nodes:
+                if x["id"] not in existing:
+                    nodes.append(x)
+            edges.extend(sub_edges)
+
+    cur.execute(
+        """SELECT DISTINCT EMPRESA, ESTABFORNECEDOR, FORNECEDOR, REPLACE(DUPPAG,' ','')
+           FROM VIASOFT.PPADUCHR
+           WHERE BANCO=:b AND NROCHEQUE=:n AND CLIENTE=:c AND EMITENTE=:em""",
+        b=banco, n=nrocheque_real, c=cliente_num, em=emitente,
+    )
+    for emp_dp, estab_forn, forn, duppag_norm in cur.fetchall():
+        sub_nodes, sub_edges, _ = _trace_pduppaga(cur, emp_dp, duppag_norm)
+        if sub_nodes:
+            existing = {x["id"] for x in nodes}
+            for x in sub_nodes:
+                if x["id"] not in existing:
+                    nodes.append(x)
+            edges.extend(sub_edges)
+
+    cur.execute(
+        """SELECT DISTINCT nf.ESTAB, nf.SEQNOTA
+           FROM VIASOFT.AGRFINCHEREC ac
+           JOIN VIASOFT.NFCABAGRFIN nf ON nf.SEQPAGAMENTO = ac.SEQPAGAMENTO
+           WHERE ac.ESTAB=:emp AND ac.BANCO=:b AND ac.ESTABCLIENTE=:ec
+             AND ac.CLIENTE=:c AND ac.EMITENTE=:em AND ac.NROCHEQUE=:n""",
+        emp=emp, b=banco, ec=estab_cli, c=cliente_num, em=emitente, n=nrocheque_real,
+    )
+    for estab_nf, seqnota in cur.fetchall():
+        sub_nodes, sub_edges, _ = _trace_nfcab(cur, estab_nf, seqnota)
+        if sub_nodes:
+            existing = {x["id"] for x in nodes}
+            for x in sub_nodes:
+                if x["id"] not in existing:
+                    nodes.append(x)
+            edges.extend(sub_edges)
+
+    # ── PESSOA (apenas na chamada raiz) ───────────────────────────────────────
+    if is_root and cliente_num:
+        pessoa_det = _pessoa_detail(cur, cliente_num)
+        if pessoa_det:
+            pes_id = f"PESSOA-{cliente_num}"
+            if not any(x["id"] == pes_id for x in nodes):
+                nodes.append({
+                    "id": pes_id, "type": "PESSOA",
+                    "label": _pessoa_label(pessoa_det), "data": pessoa_det,
+                })
+            pedcab_ids  = [x["id"] for x in nodes if x["type"] == "PEDCAB"]
+            pduprec_ids = [x["id"] for x in nodes if x["type"] == "PDUPREC"]
+            cml_ids     = [x["id"] for x in nodes if x["type"] == "CONTAMOVLAN"]
+            if pedcab_ids:
+                for pid in pedcab_ids:
+                    edges.append({"from": pes_id, "to": pid, "label": "cliente"})
+            elif pduprec_ids:
+                edges.append({"from": pes_id, "to": pduprec_ids[0], "label": "cliente"})
+            elif cml_ids:
+                edges.append({"from": pes_id, "to": cml_ids[0], "label": "cliente"})
+            else:
+                edges.append({"from": pes_id, "to": ch_id, "label": "cliente"})
+
+    return nodes, edges, None
+
+
 # ─── endpoint principal ───────────────────────────────────────────────────────
 
 @bp.route("")
@@ -2041,6 +2473,7 @@ def trace():
     serie = request.args.get("serie", "").strip()
 
     numerocm = request.args.get("numerocm", type=int)
+    cliente  = request.args.get("cliente",  type=int)
 
     if not tela or not doc:
         return jsonify({"erro": "Parâmetros obrigatórios: tela, doc"}), 400
@@ -2063,6 +2496,19 @@ def trace():
             if not numerocm:
                 return jsonify({"erro": "Parâmetro obrigatório: numerocm"}), 400
             nodes, edges, err = _trace_contamovlan(cur, numerocm, estab or 1, int(doc))
+        elif tela == "CHEQREC":
+            emp     = empresa or 1
+            banco   = request.args.get("banco",        "").strip() or None
+            estab_c = request.args.get("estabcliente", type=int)
+            emitente= request.args.get("emitente",     "").strip() or None
+            nodes, edges, err = _trace_pcheqrec(cur, emp, int(doc), cliente, banco, estab_c, emitente)
+        elif tela == "CHEQEMI":
+            emp      = empresa or 1
+            portador = request.args.get("portador", type=int)
+            serie_c  = request.args.get("serie", "").strip() or "1"
+            if not portador:
+                return jsonify({"erro": "Parâmetro obrigatório: portador"}), 400
+            nodes, edges, err = _trace_pcheqemi(cur, emp, portador, int(doc), serie_c)
         else:
             return jsonify({"erro": f"Tipo '{tela}' não suportado"}), 400
 
@@ -2083,6 +2529,8 @@ def trace():
             root_id = f"PEDCAB-{estab or 1}-{serie}-{int(doc)}"
         elif tela == "CONTAMOV":
             root_id = f"CONTAMOVLAN-{numerocm}-{estab or 1}-{int(doc)}"
+        elif tela in ("CHEQREC", "CHEQEMI"):
+            root_id = None  # isRoot marcado dentro do _trace_p* pelo primeiro nó
         else:
             root_id = None
         if root_id:
