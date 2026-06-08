@@ -670,6 +670,9 @@ def _trace_pduprec(cur, empresa, duprec_raw, skip_pessoa=False, skip_upstream=Fa
                     })
                 edges.append({"from": ped_id, "to": nf_id, "label": "fatura em"})
 
+    # ── UPSTREAM: documentos de origem alternativos (CTRC / CONHE / CONTRATO / RPA)
+    _add_doc_origem_nodes(cur, seqs, dup_id, "gera duplicata", nodes, edges)
+
     # ── UPSTREAM via cartão: dup. administrativa → PACECARTAO → PRVDACAR → NF-e
     #    Omitido em dups administratoras (upstream já está no grafo principal)
     if not skip_upstream and not nf_seqnotas_seen:
@@ -1218,6 +1221,9 @@ def _trace_pduppaga(cur, empresa, duppag_raw):
                 },
             })
             edges.append({"from": nf_id, "to": dup_id, "label": "gera dup. pagar"})
+
+    # ── UPSTREAM: documentos de origem alternativos (CTRC / CONHE / CONTRATO / RPA)
+    _add_doc_origem_nodes(cur, seqs, dup_id, "gera dup. pagar", nodes, edges)
 
     # ── DOWNSTREAM: baixas da duplicata a pagar
     cur.execute(
@@ -2080,6 +2086,168 @@ def _trace_contamovlan(cur, numerocm, estab, seqcm):
     return nodes, edges, None
 
 
+# ─── helpers: nós de origem (CTRC / CONHE / CONTRATO / RPA) ─────────────────
+
+def _build_ctrc_node(cur, seqctrc):
+    cur.execute(
+        "SELECT NROCTRC, SERIE, DTEMISSAO, TOTAL FROM VIASOFT.CTRC WHERE SEQCTRC=:s",
+        s=seqctrc,
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    nroctrc, serie, dtemissao, total = row
+    return {
+        "id":   f"CTRC-{seqctrc}",
+        "type": "CTRC",
+        "label": (
+            f"<b>Conhec. Transp. Entrada</b>\nNº: {nroctrc}  Série: {serie}"
+            + (f"\nEmissão: {dtemissao.strftime('%d/%m/%Y')}" if dtemissao else "")
+            + f"\nValor: {_fmtval(total)}"
+        ),
+        "data": {
+            "nroctrc": nroctrc,
+            "serie":   serie,
+            "emissao": dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
+            "valor":   float(total) if total else 0,
+        },
+    }
+
+
+def _build_conhe_node(cur, estab, seqconhe):
+    cur.execute(
+        "SELECT NUMERO, SERIE, DTEMISSAO, TOTALFRETE FROM VIASOFT.CONHE WHERE ESTAB=:e AND SEQCONHE=:s",
+        e=estab, s=seqconhe,
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    numero, serie, dtemissao, totalfrete = row
+    return {
+        "id":   f"CONHE-{estab}-{seqconhe}",
+        "type": "CONHE",
+        "label": (
+            f"<b>CT-e (Transp. Saída)</b>\nNº: {numero}  Série: {serie}"
+            + (f"\nEmissão: {dtemissao.strftime('%d/%m/%Y')}" if dtemissao else "")
+            + f"\nFrete: {_fmtval(totalfrete)}"
+        ),
+        "data": {
+            "numero":  numero,
+            "serie":   serie,
+            "emissao": dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
+            "valor":   float(totalfrete) if totalfrete else 0,
+        },
+    }
+
+
+def _build_contrato_node(cur, estab, contrato):
+    cur.execute(
+        "SELECT DTEMISSAO, DTVENCTO, VALOR FROM VIASOFT.CONTRATO WHERE ESTAB=:e AND CONTRATO=:c",
+        e=estab, c=contrato,
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    dtemissao, dtvencto, valor = row
+    return {
+        "id":   f"CONTRATO-{estab}-{contrato}",
+        "type": "CONTRATO",
+        "label": (
+            f"<b>Contrato</b>\nNº: {contrato}"
+            + (f"\nEmissão: {dtemissao.strftime('%d/%m/%Y')}" if dtemissao else "")
+            + (f"\nVencto: {dtvencto.strftime('%d/%m/%Y')}" if dtvencto else "")
+            + f"\nValor: {_fmtval(valor)}"
+        ),
+        "data": {
+            "contrato": contrato,
+            "emissao":  dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
+            "vencto":   dtvencto.strftime("%d/%m/%Y") if dtvencto else None,
+            "valor":    float(valor) if valor else 0,
+        },
+    }
+
+
+def _build_rpa_node(cur, estab, codigo):
+    cur.execute(
+        "SELECT MES, ANO, VALOR, DESCRICAO FROM VIASOFT.RPA WHERE ESTAB=:e AND CODIGO=:c",
+        e=estab, c=codigo,
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    mes, ano, valor, descricao = row
+    return {
+        "id":   f"RPA-{estab}-{codigo}",
+        "type": "RPA",
+        "label": (
+            f"<b>RPA</b>\nCódigo: {codigo}"
+            + (f"\nPeríodo: {mes:02d}/{ano}" if mes and ano else "")
+            + f"\nValor: {_fmtval(valor)}"
+        ),
+        "data": {
+            "codigo":    codigo,
+            "periodo":   f"{mes:02d}/{ano}" if mes and ano else None,
+            "valor":     float(valor) if valor else 0,
+            "descricao": descricao,
+        },
+    }
+
+
+def _add_doc_origem_nodes(cur, seqs, target_id, edge_label, nodes, edges):
+    """Detecta documentos de origem (CTRC/CONHE/CONTRATO/RPA) via SEQPAGAMENTO."""
+    ctrc_seen     = set()
+    conhe_seen    = set()
+    contrato_seen = set()
+    rpa_seen      = set()
+
+    for seq in seqs:
+        cur.execute("SELECT SEQCTRC FROM VIASOFT.AGRFINCTRC WHERE SEQPAGAMENTO=:s", s=seq)
+        for (seqctrc,) in cur.fetchall():
+            if seqctrc in ctrc_seen:
+                continue
+            ctrc_seen.add(seqctrc)
+            n = _build_ctrc_node(cur, seqctrc)
+            if n and not any(x["id"] == n["id"] for x in nodes):
+                nodes.append(n)
+                edges.append({"from": n["id"], "to": target_id, "label": edge_label})
+
+        cur.execute(
+            "SELECT ESTAB, SEQCONHE FROM VIASOFT.CONHEAGRFIN WHERE SEQPAGAMENTO=:s", s=seq
+        )
+        for estab_c, seqconhe in cur.fetchall():
+            if (estab_c, seqconhe) in conhe_seen:
+                continue
+            conhe_seen.add((estab_c, seqconhe))
+            n = _build_conhe_node(cur, estab_c, seqconhe)
+            if n and not any(x["id"] == n["id"] for x in nodes):
+                nodes.append(n)
+                edges.append({"from": n["id"], "to": target_id, "label": edge_label})
+
+        cur.execute(
+            "SELECT ESTAB, CONTRATO FROM VIASOFT.CONTRATOAGRFIN WHERE SEQPAGAMENTO=:s", s=seq
+        )
+        for estab_c, contrato in cur.fetchall():
+            if (estab_c, contrato) in contrato_seen:
+                continue
+            contrato_seen.add((estab_c, contrato))
+            n = _build_contrato_node(cur, estab_c, contrato)
+            if n and not any(x["id"] == n["id"] for x in nodes):
+                nodes.append(n)
+                edges.append({"from": n["id"], "to": target_id, "label": edge_label})
+
+        cur.execute(
+            "SELECT ESTAB, CODIGO FROM VIASOFT.RPAAGRFIN WHERE SEQPAGAMENTO=:s", s=seq
+        )
+        for estab_r, codigo in cur.fetchall():
+            if (estab_r, codigo) in rpa_seen:
+                continue
+            rpa_seen.add((estab_r, codigo))
+            n = _build_rpa_node(cur, estab_r, codigo)
+            if n and not any(x["id"] == n["id"] for x in nodes):
+                nodes.append(n)
+                edges.append({"from": n["id"], "to": target_id, "label": edge_label})
+
+
 # ─── trace por PCHEQEMI ──────────────────────────────────────────────────────
 
 def _trace_pcheqemi(cur, empresa, portador, nrocheque, serie):
@@ -2530,7 +2698,7 @@ def trace():
         elif tela == "CONTAMOV":
             root_id = f"CONTAMOVLAN-{numerocm}-{estab or 1}-{int(doc)}"
         elif tela in ("CHEQREC", "CHEQEMI"):
-            root_id = None  # isRoot marcado dentro do _trace_p* pelo primeiro nó
+            root_id = None  # isRoot marcado dentro do _trace_* pelo primeiro nó
         else:
             root_id = None
         if root_id:
