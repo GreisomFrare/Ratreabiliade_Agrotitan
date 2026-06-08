@@ -971,39 +971,26 @@ def _trace_pduprec(cur, empresa, duprec_raw, skip_pessoa=False, skip_upstream=Fa
         # PRDURECH → PCHEQREC
         cur.execute(
             """SELECT ch.BANCO, ch.NROCHEQUE, ch.VLRCHEQREC,
-                      pcr.DTLANCA, pcr.SEQLANCA
+                      pcr.ESTABCLIENTE, pcr.CLIENTE, pcr.EMITENTE
                FROM VIASOFT.PRDURECH ch
                LEFT JOIN VIASOFT.PCHEQREC pcr
                  ON pcr.EMPRESA = ch.EMPRESA
                 AND pcr.BANCO = ch.BANCO
                 AND pcr.NROCHEQUE = ch.NROCHEQUE
+                AND ROWNUM = 1
                WHERE ch.EMPRESA=:emp AND REPLACE(ch.DUPREC,' ','')=:dup AND ch.SEQRECBTO=:seq""",
             emp=emp, dup=duprec_norm, seq=seqrec,
         )
-        for banco_ch, nrocheque, vlr_ch, dtlanca_ch, seqlanca_ch in cur.fetchall():
-            ch_id = f"PCHEQREC-{emp}-{banco_ch}-{nrocheque}"
-            nodes.append({
-                "id": ch_id,
-                "type": "PCHEQREC",
-                "label": (
-                    f"<b>Cheque Recebido</b>\nCheque: #{nrocheque}"
-                    + (f"\nData: {dtlanca_ch.strftime('%d/%m/%Y')}" if dtlanca_ch else "")
-                    + f"\nValor: {_fmtval(vlr_ch)}"
-                ),
-                "data": {
-                    "banco": banco_ch,
-                    "nrocheque": nrocheque,
-                    "valor": float(vlr_ch) if vlr_ch else 0,
-                    "data": dtlanca_ch.strftime("%d/%m/%Y") if dtlanca_ch else None,
-                },
-            })
+        for banco_ch, nrocheque, vlr_ch, estab_cli, cliente_ch, emitente_ch in cur.fetchall():
+            ch_node, lanca_node = _cheqrec_node(cur, emp, banco_ch, estab_cli, cliente_ch, emitente_ch, nrocheque, vlr_ch)
+            ch_id = ch_node["id"]
+            if not any(n["id"] == ch_id for n in nodes):
+                nodes.append(ch_node)
             edges.append({"from": bx_id, "to": ch_id, "label": "cheque"})
-            if dtlanca_ch and seqlanca_ch:
-                lanca_node = _build_planca_node(cur, emp, dtlanca_ch, seqlanca_ch)
-                if lanca_node:
-                    if not any(n["id"] == lanca_node["id"] for n in nodes):
-                        nodes.append(lanca_node)
-                    edges.append({"from": ch_id, "to": lanca_node["id"], "label": "compensação"})
+            if lanca_node:
+                if not any(n["id"] == lanca_node["id"] for n in nodes):
+                    nodes.append(lanca_node)
+                edges.append({"from": ch_id, "to": lanca_node["id"], "label": "compensação"})
 
         # PRDUREDUP → PDUPREC (baixa em duplicata)
         cur.execute(
@@ -1291,36 +1278,10 @@ def _trace_pduppaga(cur, empresa, duppag_raw):
             emp=emp, ef=estab_forn, f=fornecedor, dup=duppag_norm, seq=seqpag,
         )
         for portador_ch, nrocheque, serie_ch, vlr_ch in cur.fetchall():
-            cur.execute(
-                """SELECT VALOR, DTEMISSAO, DTBOMPARA, FAVORECIDO, HISTORICO, SITUACAO
-                   FROM VIASOFT.PCHEQEMI
-                   WHERE EMPRESA=:e AND PORTADOR=:p AND NROCHEQUE=:n AND SERIE=:s""",
-                e=emp, p=portador_ch, n=nrocheque, s=serie_ch,
-            )
-            chq = cur.fetchone()
-            chq_id = f"PCHEQEMI-{emp}-{portador_ch}-{nrocheque}-{serie_ch}"
-            if not any(n["id"] == chq_id for n in nodes):
-                nodes.append({
-                    "id": chq_id,
-                    "type": "PCHEQEMI",
-                    "label": (
-                        f"<b>Cheque Emitido</b>\nCheque: #{nrocheque}"
-                        + (f"\nEmissão: {chq[1].strftime('%d/%m/%Y')}" if chq and chq[1] else "")
-                        + f"\nValor: {_fmtval(vlr_ch)}"
-                    ),
-                    "data": {
-                        "portador": portador_ch,
-                        "nrocheque": nrocheque,
-                        "serie": serie_ch,
-                        "valor": float(vlr_ch) if vlr_ch else 0,
-                        "emissao": chq[1].strftime("%d/%m/%Y") if chq and chq[1] else None,
-                        "bom_para": chq[2].strftime("%d/%m/%Y") if chq and chq[2] else None,
-                        "favorecido": chq[3] if chq else None,
-                        "historico": chq[4] if chq else None,
-                        "situacao": chq[5] if chq else None,
-                    },
-                })
-            edges.append({"from": bx_id, "to": chq_id, "label": "cheque emitido"})
+            ch_node = _cheqemi_node(cur, emp, portador_ch, nrocheque, serie_ch, vlr_ch)
+            if not any(n["id"] == ch_node["id"] for n in nodes):
+                nodes.append(ch_node)
+            edges.append({"from": bx_id, "to": ch_node["id"], "label": "cheque emitido"})
 
         # CT → PPADUCHR → PCHEQREC (cheque de terceiro usado como pagamento)
         cur.execute(
@@ -1331,39 +1292,15 @@ def _trace_pduppaga(cur, empresa, duppag_raw):
             emp=emp, ef=estab_forn, f=fornecedor, dup=duppag_norm, seq=seqpag,
         )
         for estab_cli, banco_ch, emitente, nrocheque, cliente, vlr_ch in cur.fetchall():
-            cur.execute(
-                """SELECT VALOR, DTLANCA, DTEMISSAO, HISTORICO, SITUACAO, SEQLANCA
-                   FROM VIASOFT.PCHEQREC
-                   WHERE EMPRESA=:e AND ESTABCLIENTE=:ec AND BANCO=:b
-                     AND EMITENTE=:em AND NROCHEQUE=:n AND CLIENTE=:c
-                     AND ROWNUM=1""",
-                e=emp, ec=estab_cli, b=banco_ch, em=emitente, n=nrocheque, c=cliente,
-            )
-            chq = cur.fetchone()
-            ch_id = f"PCHEQREC-{emp}-{banco_ch}-{nrocheque}"
+            ch_node, lanca_node = _cheqrec_node(cur, emp, banco_ch, estab_cli, cliente, emitente, nrocheque, vlr_ch)
+            ch_id = ch_node["id"]
             if not any(n["id"] == ch_id for n in nodes):
-                nodes.append({
-                    "id": ch_id,
-                    "type": "PCHEQREC",
-                    "label": (
-                        f"<b>Cheque Recebido</b>\nCheque: #{nrocheque}"
-                        + (f"\nData: {chq[1].strftime('%d/%m/%Y')}" if chq and chq[1] else "")
-                        + f"\nValor: {_fmtval(vlr_ch)}"
-                    ),
-                    "data": {
-                        "banco": banco_ch,
-                        "nrocheque": nrocheque,
-                        "valor": float(vlr_ch) if vlr_ch else 0,
-                        "data": chq[1].strftime("%d/%m/%Y") if chq and chq[1] else None,
-                    },
-                })
+                nodes.append(ch_node)
             edges.append({"from": bx_id, "to": ch_id, "label": "cheque terceiro"})
-            if chq and chq[1] and chq[5]:
-                lanca_node = _build_planca_node(cur, emp, chq[1], chq[5])
-                if lanca_node:
-                    if not any(n["id"] == lanca_node["id"] for n in nodes):
-                        nodes.append(lanca_node)
-                    edges.append({"from": ch_id, "to": lanca_node["id"], "label": "compensação"})
+            if lanca_node:
+                if not any(n["id"] == lanca_node["id"] for n in nodes):
+                    nodes.append(lanca_node)
+                edges.append({"from": ch_id, "to": lanca_node["id"], "label": "compensação"})
 
         # CM → PPADUCM → CONTAMOVLAN
         cur.execute(
@@ -1396,33 +1333,15 @@ def _trace_pduppaga(cur, empresa, duppag_raw):
                 if lanca_node:
                     edges.append({"from": bx_id, "to": lanca_node["id"], "label": "troco"})
             if nrocheque_t:
-                ch_id = f"PCHEQREC-{emp}-{banco_t}-{nrocheque_t}"
+                ch_node, lanca_node = _cheqrec_node(cur, emp, banco_t, estab_cli_t, cliente_t, emitente_t, nrocheque_t, None)
+                ch_id = ch_node["id"]
                 if not any(n["id"] == ch_id for n in nodes):
-                    cur.execute(
-                        """SELECT VALOR, DTLANCA, SEQLANCA FROM VIASOFT.PCHEQREC
-                           WHERE EMPRESA=:e AND ESTABCLIENTE=:ec AND BANCO=:b
-                             AND EMITENTE=:em AND NROCHEQUE=:n AND CLIENTE=:c AND ROWNUM=1""",
-                        e=emp, ec=estab_cli_t, b=banco_t, em=emitente_t, n=nrocheque_t, c=cliente_t,
-                    )
-                    chq = cur.fetchone()
-                    nodes.append({
-                        "id": ch_id,
-                        "type": "PCHEQREC",
-                        "label": (
-                            f"<b>Cheque Recebido</b>\nCheque: #{nrocheque_t}"
-                            + (f"\nData: {chq[1].strftime('%d/%m/%Y')}" if chq and chq[1] else "")
-                            + "\nTroco"
-                        ),
-                        "data": {"banco": banco_t, "nrocheque": nrocheque_t,
-                                 "valor": float(chq[0]) if chq and chq[0] else 0},
-                    })
+                    nodes.append(ch_node)
                 edges.append({"from": bx_id, "to": ch_id, "label": "troco cheque"})
-                if chq and chq[1] and chq[2]:
-                    lanca_node = _build_planca_node(cur, emp, chq[1], chq[2])
-                    if lanca_node:
-                        if not any(n["id"] == lanca_node["id"] for n in nodes):
-                            nodes.append(lanca_node)
-                        edges.append({"from": ch_id, "to": lanca_node["id"], "label": "compensação"})
+                if lanca_node:
+                    if not any(n["id"] == lanca_node["id"] for n in nodes):
+                        nodes.append(lanca_node)
+                    edges.append({"from": ch_id, "to": lanca_node["id"], "label": "compensação"})
 
         # PPDUPPADUP → PDUPPAGA agrupadora
         cur.execute(
@@ -1720,61 +1639,98 @@ def _trace_pedcab(cur, estab, serie, numero):
 
 def _cheqemi_node(cur, empresa, portador, nrocheque, serie, vlr_fallback):
     cur.execute(
-        """SELECT VALOR, DTEMISSAO, DTBOMPARA, FAVORECIDO, HISTORICO, SITUACAO
+        """SELECT VALOR, DTEMISSAO, DTBOMPARA, FAVORECIDO, HISTORICO, HISTORICO2,
+                  SITUACAO, DTLANCA, SEQLANCA, DTLANCATRANSF, SEQLANCATRANSF,
+                  ESTABRECIBO, NRORECIBO
            FROM VIASOFT.PCHEQEMI
            WHERE EMPRESA=:e AND PORTADOR=:p AND NROCHEQUE=:n AND SERIE=:s""",
         e=empresa, p=portador, n=nrocheque, s=serie,
     )
     chq = cur.fetchone()
+    port_info   = _portador(cur, empresa, portador) if portador else {}
+    recibo_data = None
+    if chq:
+        (valor, dtemissao, dtbompara, favorecido, historico, historico2,
+         situacao, dtlanca, seqlanca, dtlancatransf, seqlancatransf,
+         estabrecibo, nrorecibo) = chq
+        recibo_data = _recibo(cur, estabrecibo or empresa, nrorecibo) if nrorecibo else None
+    else:
+        valor = vlr_fallback
+        dtemissao = dtbompara = favorecido = historico = historico2 = situacao = None
+        dtlanca = seqlanca = dtlancatransf = seqlancatransf = None
     return {
         "id":   f"PCHEQEMI-{empresa}-{portador}-{nrocheque}-{serie}",
         "type": "PCHEQEMI",
         "label": (
             f"<b>Cheque Emitido</b>\nCheque: #{nrocheque}"
-            + (f"\nEmissão: {chq[1].strftime('%d/%m/%Y')}" if chq and chq[1] else "")
-            + f"\nValor: {_fmtval(chq[0] if chq else vlr_fallback)}"
+            + (f"\nSérie: {serie}" if serie else "")
+            + (f"\nEmissão: {dtemissao.strftime('%d/%m/%Y')}" if dtemissao else "")
+            + f"\nValor: {_fmtval(valor)}"
         ),
         "data": {
-            "portador":  portador,
-            "nrocheque": nrocheque,
-            "serie":     serie,
-            "valor":     float(chq[0]) if chq and chq[0] else (float(vlr_fallback) if vlr_fallback else 0),
-            "emissao":   chq[1].strftime("%d/%m/%Y") if chq and chq[1] else None,
-            "bom_para":  chq[2].strftime("%d/%m/%Y") if chq and chq[2] else None,
-            "favorecido": chq[3] if chq else None,
-            "historico": chq[4] if chq else None,
-            "situacao":  chq[5] if chq else None,
+            "nrocheque":     nrocheque,
+            "serie":         serie,
+            "portador_desc": port_info.get("descricao"),
+            "favorecido":    favorecido,
+            "valor":         float(valor) if valor else 0,
+            "emissao":       dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
+            "bom_para":      dtbompara.strftime("%d/%m/%Y") if dtbompara else None,
+            "historico":     historico,
+            "historico2":    historico2,
+            "situacao":      situacao,
+            "recibo_data":   recibo_data,
         },
     }
 
 
 def _cheqrec_node(cur, empresa, banco, estab_cli, cliente, emitente, nrocheque, vlr_fallback):
     cur.execute(
-        """SELECT VALOR, DTLANCA, DTEMISSAO, HISTORICO, SITUACAO, SEQLANCA
+        """SELECT VALOR, DTEMISSAO, DTBOMPARA, HISTORICO, PORTADOR,
+                  DTLANCA, SEQLANCA, DTLANCATRAN, SEQLANCATRAN,
+                  DTESTORNODEP, SEQESTORNODEP, ESTABRECIBO, NRORECIBO
            FROM VIASOFT.PCHEQREC
            WHERE EMPRESA=:e AND ESTABCLIENTE=:ec AND BANCO=:b
              AND EMITENTE=:em AND NROCHEQUE=:n AND CLIENTE=:c AND ROWNUM=1""",
         e=empresa, ec=estab_cli, b=banco, em=emitente, n=nrocheque, c=cliente,
     )
     chq = cur.fetchone()
+    port_info   = {}
+    recibo_data = None
+    if chq:
+        (valor, dtemissao, dtbompara, historico, portador,
+         dtlanca, seqlanca, dtlancatran, seqlancatran,
+         dtestornodep, seqestornodep, estabrecibo, nrorecibo) = chq
+        port_info   = _portador(cur, empresa, portador) if portador else {}
+        recibo_data = _recibo(cur, estabrecibo or empresa, nrorecibo) if nrorecibo else None
+    else:
+        valor = vlr_fallback
+        dtemissao = dtbompara = historico = portador = None
+        dtlanca = seqlanca = dtlancatran = seqlancatran = None
+        dtestornodep = seqestornodep = None
     ch_node = {
         "id":   f"PCHEQREC-{empresa}-{banco}-{nrocheque}",
         "type": "PCHEQREC",
         "label": (
             f"<b>Cheque Recebido</b>\nCheque: #{nrocheque}"
-            + (f"\nData: {chq[1].strftime('%d/%m/%Y')}" if chq and chq[1] else "")
-            + f"\nValor: {_fmtval(chq[0] if chq else vlr_fallback)}"
+            + (f"\nBanco: {_trunc(banco, 22)}" if banco else "")
+            + (f"\nEmissão: {dtemissao.strftime('%d/%m/%Y')}" if dtemissao else "")
+            + f"\nValor: {_fmtval(valor)}"
         ),
         "data": {
-            "banco":     banco,
-            "nrocheque": nrocheque,
-            "valor":     float(chq[0]) if chq and chq[0] else (float(vlr_fallback) if vlr_fallback else 0),
-            "data":      chq[1].strftime("%d/%m/%Y") if chq and chq[1] else None,
+            "banco":         banco,
+            "nrocheque":     nrocheque,
+            "emitente":      emitente,
+            "valor":         float(valor) if valor else 0,
+            "emissao":       dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
+            "bom_para":      dtbompara.strftime("%d/%m/%Y") if dtbompara else None,
+            "historico":     historico,
+            "portador_desc": port_info.get("descricao"),
+            "recibo_data":   recibo_data,
         },
     }
     lanca_node = None
-    if chq and chq[1] and chq[5]:  # DTLANCA e SEQLANCA preenchidos = cheque compensado
-        lanca_node = _build_planca_node(cur, empresa, chq[1], chq[5])
+    if dtlanca and seqlanca:
+        lanca_node = _build_planca_node(cur, empresa, dtlanca, seqlanca)
     return ch_node, lanca_node
 
 
