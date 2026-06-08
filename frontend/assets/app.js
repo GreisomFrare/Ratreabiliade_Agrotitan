@@ -323,6 +323,8 @@ const LABELS = {
   bairro:'Bairro', cidade:'Cidade', uf:'UF', cep:'CEP',
   telefone:'Telefone', celular:'Celular',
   portador:'Portador', portador_desc:'Portador', bom_para:'Bom Para', favorecido:'Favorecido', emitente:'Emitente',
+  prestador:'Prestador', entrada:'Data Entrada', exec_serv:'Exec. Serviço',
+  cfop:'CFOP', chaveacesso:'Chave de Acesso', origem:'Origem', destino:'Destino',
 };
 const SKIP = ['itens', 'portador', 'estab', 'pgto', 'agrfin', 'estab_recibo', 'recibo_data', 'transferido_de_estab', 'dt_transferencia'];
 

@@ -2054,13 +2054,20 @@ def _trace_contamovlan(cur, numerocm, estab, seqcm):
 
 def _build_ctrc_node(cur, seqctrc):
     cur.execute(
-        "SELECT NROCTRC, SERIE, DTEMISSAO, TOTAL FROM VIASOFT.CTRC WHERE SEQCTRC=:s",
+        """SELECT NROCTRC, SERIE, DTEMISSAO, DTENTRADA, DTEXECSERV, TOTAL,
+                  PRESTADOR, FORNECEDOR, CFOP, USERID, CHAVEACESSO,
+                  CIDORIGEM, CIDDESTINO
+           FROM VIASOFT.CTRC WHERE SEQCTRC=:s""",
         s=seqctrc,
     )
     row = cur.fetchone()
     if not row:
         return None
-    nroctrc, serie, dtemissao, total = row
+    (nroctrc, serie, dtemissao, dtentrada, dtexecserv, total,
+     prestador, fornecedor, cfop, userid, chaveacesso,
+     cidorigem, ciddestino) = row
+    prest_info = _pessoa(cur, prestador) if prestador else {}
+    forn_info  = _pessoa(cur, fornecedor) if fornecedor else {}
     return {
         "id":   f"CTRC-{seqctrc}",
         "type": "CTRC",
@@ -2070,10 +2077,19 @@ def _build_ctrc_node(cur, seqctrc):
             + f"\nValor: {_fmtval(total)}"
         ),
         "data": {
-            "nroctrc": nroctrc,
-            "serie":   serie,
-            "emissao": dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
-            "valor":   float(total) if total else 0,
+            "nroctrc":     nroctrc,
+            "serie":       serie,
+            "emissao":     dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
+            "entrada":     dtentrada.strftime("%d/%m/%Y") if dtentrada else None,
+            "exec_serv":   dtexecserv.strftime("%d/%m/%Y") if dtexecserv else None,
+            "valor":       float(total) if total else 0,
+            "prestador":   prest_info.get("nome") if prestador else None,
+            "fornecedor":  forn_info.get("nome") if fornecedor else None,
+            "cfop":        cfop,
+            "userid":      userid,
+            "chaveacesso": chaveacesso,
+            "origem":      cidorigem,
+            "destino":     ciddestino,
         },
     }
 
