@@ -358,13 +358,6 @@ function _mostrarDetalhe(node) {
   }
   html += '</table>';
 
-  if (node.type === 'PDUPREC') {
-    html += `<hr class="my-2"/>
-      <button class="btn btn-sm btn-outline-primary w-100" onclick="_testeDelphiCall()">
-        <i class="bi bi-box-arrow-up-right me-1"></i>Teste ac_AbrirCadastro
-      </button>`;
-  }
-
   if (d.itens && d.itens.length > 0) {
     html += '<hr class="my-2"/><p class="small fw-semibold mb-1 text-muted">Itens da NF</p><div class="item-list">';
     for (const it of d.itens) {
@@ -559,15 +552,6 @@ function _abrirRecibo(btn) {
 
   if (!_modalRecibo) _modalRecibo = new bootstrap.Modal(document.getElementById('modalRecibo'));
   _modalRecibo.show();
-}
-
-/* ── teste de chamada Delphi ─────────────────────────────────────────────── */
-function _testeDelphiCall() {
-  try {
-    window.delphiApp.call('PDUPREC', { id: 42 });
-  } catch (e) {
-    alert('Erro ao chamar delphiApp.call:\n' + e.message);
-  }
 }
 
 /* ── integração Delphi: lê window.delphiApp.params e auto-preenche ──────── */
