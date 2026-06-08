@@ -1092,10 +1092,14 @@ def _trace_pduprec(cur, empresa, duprec_raw, skip_pessoa=False, skip_upstream=Fa
                     "label": _pessoa_label(pessoa_det),
                     "data": pessoa_det,
                 })
-            pedcab_ids = [n["id"] for n in nodes if n["type"] == "PEDCAB"]
+            pedcab_ids  = [n["id"] for n in nodes if n["type"] == "PEDCAB"]
+            origem_ids  = [n["id"] for n in nodes if n["type"] in ("CTRC", "CONHE", "CONTRATO", "RPA")]
             if pedcab_ids:
                 for pid in pedcab_ids:
                     edges.append({"from": pes_id, "to": pid, "label": "cliente"})
+            elif origem_ids:
+                for oid in origem_ids:
+                    edges.append({"from": pes_id, "to": oid, "label": "cliente"})
             else:
                 edges.append({"from": pes_id, "to": dup_id, "label": "cliente"})
 
@@ -1374,10 +1378,14 @@ def _trace_pduppaga(cur, empresa, duppag_raw):
                 "label": _pessoa_label(pessoa_det),
                 "data": pessoa_det,
             })
-        nf_ids = [n["id"] for n in nodes if n["type"] == "NFCAB"]
+        nf_ids      = [n["id"] for n in nodes if n["type"] == "NFCAB"]
+        origem_ids  = [n["id"] for n in nodes if n["type"] in ("CTRC", "CONHE", "CONTRATO", "RPA")]
         if nf_ids:
             for nid in nf_ids:
                 edges.append({"from": pes_id, "to": nid, "label": "fornecedor"})
+        elif origem_ids:
+            for oid in origem_ids:
+                edges.append({"from": pes_id, "to": oid, "label": "fornecedor"})
         else:
             edges.append({"from": pes_id, "to": dup_id, "label": "fornecedor"})
 
