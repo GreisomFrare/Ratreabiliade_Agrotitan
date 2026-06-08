@@ -2096,13 +2096,20 @@ def _build_ctrc_node(cur, seqctrc):
 
 def _build_conhe_node(cur, estab, seqconhe):
     cur.execute(
-        "SELECT NUMERO, SERIE, DTEMISSAO, TOTALFRETE FROM VIASOFT.CONHE WHERE ESTAB=:e AND SEQCONHE=:s",
+        """SELECT NUMERO, SERIE, DTEMISSAO, DTENTRADASAIDA, DTEXECSERV, TOTALFRETE,
+                  REMETENTE, FORNECEDOR, CFOP, USUARIO, CHAVEACESSO,
+                  CIDADEORIGEM, CIDADEDESTINO
+           FROM VIASOFT.CONHE WHERE ESTAB=:e AND SEQCONHE=:s""",
         e=estab, s=seqconhe,
     )
     row = cur.fetchone()
     if not row:
         return None
-    numero, serie, dtemissao, totalfrete = row
+    (numero, serie, dtemissao, dtentrada, dtexecserv, totalfrete,
+     remetente, fornecedor, cfop, usuario, chaveacesso,
+     cidadeorigem, cidadedestino) = row
+    remet_info = _pessoa(cur, remetente)  if remetente  else {}
+    forn_info  = _pessoa(cur, fornecedor) if fornecedor else {}
     return {
         "id":   f"CONHE-{estab}-{seqconhe}",
         "type": "CONHE",
@@ -2112,10 +2119,19 @@ def _build_conhe_node(cur, estab, seqconhe):
             + f"\nFrete: {_fmtval(totalfrete)}"
         ),
         "data": {
-            "numero":  numero,
-            "serie":   serie,
-            "emissao": dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
-            "valor":   float(totalfrete) if totalfrete else 0,
+            "numero":      numero,
+            "serie":       serie,
+            "emissao":     dtemissao.strftime("%d/%m/%Y") if dtemissao else None,
+            "entrada":     dtentrada.strftime("%d/%m/%Y")  if dtentrada  else None,
+            "exec_serv":   dtexecserv.strftime("%d/%m/%Y") if dtexecserv else None,
+            "valor":       float(totalfrete) if totalfrete else 0,
+            "prestador":   remet_info.get("nome") if remetente  else None,
+            "fornecedor":  forn_info.get("nome")  if fornecedor else None,
+            "cfop":        cfop,
+            "userid":      usuario,
+            "chaveacesso": chaveacesso,
+            "origem":      cidadeorigem,
+            "destino":     cidadedestino,
         },
     }
 
